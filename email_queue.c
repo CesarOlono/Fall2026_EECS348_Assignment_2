@@ -1,0 +1,542 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#define MAX_LINE 1024
+#define MAX_SUBJECT 512
+#define MAX_CATEGORY 32
+#define MAX_DATE 11
+
+/* ---------------------------------------------------------
+   Email structure
+   --------------------------------------------------------- */
+typedef struct Email {
+    char category[MAX_CATEGORY];
+    char subject[MAX_SUBJECT];
+    char date[MAX_DATE];
+
+    int categoryPriority;
+    int dateValue;
+
+    /* Position in the linked-list representation of the heap */
+    int heapIndex;
+} Email;
+
+/* ---------------------------------------------------------
+   Linked-list node
+   --------------------------------------------------------- */
+typedef struct Node {
+    Email *email;
+    struct Node *next;
+} Node;
+
+/* ---------------------------------------------------------
+   MaxHeap implemented using a linked list.
+
+   The linked list stores heap elements in level-order:
+       index 0 = root
+       index 1 = left child of root
+       index 2 = right child of root
+       index 3 = left child of index 1
+       ...
+
+   Parent of index i:
+       (i - 1) / 2
+
+   Left child:
+       2*i + 1
+
+   Right child:
+       2*i + 2
+   --------------------------------------------------------- */
+typedef struct {
+    Node *head;
+    int size;
+} MaxHeap;
+
+/* ---------------------------------------------------------
+   Get sender-category priority.
+   Higher number = higher priority.
+   --------------------------------------------------------- */
+int getCategoryPriority(const char *category)
+{
+    if (strcmp(category, "Boss") == 0)
+        return 5;
+    if (strcmp(category, "Subordinate") == 0)
+        return 4;
+    if (strcmp(category, "Peer") == 0)
+        return 3;
+    if (strcmp(category, "ImportantPerson") == 0)
+        return 2;
+    if (strcmp(category, "OtherPerson") == 0)
+        return 1;
+
+    return 0;
+}
+
+/* ---------------------------------------------------------
+   Convert MM-DD-YYYY into an integer that preserves
+   chronological ordering.
+
+   YYYYMMDD is used, so a larger value means a newer date.
+   --------------------------------------------------------- */
+int convertDate(const char *date)
+{
+    int month, day, year;
+
+    if (sscanf(date, "%d-%d-%d", &month, &day, &year) != 3)
+        return 0;
+
+    return year * 10000 + month * 100 + day;
+}
+
+/* ---------------------------------------------------------
+   Compare two emails.
+
+   Returns:
+       > 0 if a has higher priority than b
+       < 0 if a has lower priority than b
+       = 0 if they have equal priority
+
+   Sender category is considered first.
+   If categories are equal, newer date wins.
+   --------------------------------------------------------- */
+int compareEmails(const Email *a, const Email *b)
+{
+    if (a->categoryPriority != b->categoryPriority)
+        return a->categoryPriority - b->categoryPriority;
+
+    if (a->dateValue != b->dateValue)
+        return a->dateValue - b->dateValue;
+
+    return 0;
+}
+
+/* ---------------------------------------------------------
+   Find the linked-list node at a zero-based heap index.
+
+   This is O(n), which is expected because the heap is
+   explicitly implemented using a linked list.
+   --------------------------------------------------------- */
+Node *getNodeAt(MaxHeap *heap, int index)
+{
+    Node *current;
+    int i;
+
+    if (index < 0 || index >= heap->size)
+        return NULL;
+
+    current = heap->head;
+
+    for (i = 0; i < index && current != NULL; i++)
+        current = current->next;
+
+    return current;
+}
+
+/* ---------------------------------------------------------
+   Swap two heap elements.
+   --------------------------------------------------------- */
+void swapElements(MaxHeap *heap, int index1, int index2)
+{
+    Node *node1 = getNodeAt(heap, index1);
+    Node *node2 = getNodeAt(heap, index2);
+    Email *temp;
+
+    if (node1 == NULL || node2 == NULL)
+        return;
+
+    temp = node1->email;
+    node1->email = node2->email;
+    node2->email = temp;
+}
+
+/* ---------------------------------------------------------
+   Move an element upward until the max-heap property holds.
+   --------------------------------------------------------- */
+void heapifyUp(MaxHeap *heap, int index)
+{
+    int parentIndex;
+    Node *current;
+    Node *parent;
+
+    while (index > 0) {
+        parentIndex = (index - 1) / 2;
+
+        current = getNodeAt(heap, index);
+        parent = getNodeAt(heap, parentIndex);
+
+        if (current == NULL || parent == NULL)
+            break;
+
+        if (compareEmails(current->email, parent->email) <= 0)
+            break;
+
+        swapElements(heap, index, parentIndex);
+
+        index = parentIndex;
+    }
+}
+
+/* ---------------------------------------------------------
+   Move an element downward until the max-heap property holds.
+   --------------------------------------------------------- */
+void heapifyDown(MaxHeap *heap, int index)
+{
+    int left, right, largest;
+    Node *current;
+    Node *leftNode;
+    Node *rightNode;
+
+    while (1) {
+        left = 2 * index + 1;
+        right = 2 * index + 2;
+        largest = index;
+
+        current = getNodeAt(heap, index);
+
+        if (current == NULL)
+            break;
+
+        if (left < heap->size) {
+            leftNode = getNodeAt(heap, left);
+
+            if (leftNode != NULL &&
+                compareEmails(leftNode->email, current->email) > 0) {
+                largest = left;
+            }
+        }
+
+        if (right < heap->size) {
+            Node *largestNode = getNodeAt(heap, largest);
+            rightNode = getNodeAt(heap, right);
+
+            if (rightNode != NULL &&
+                largestNode != NULL &&
+                compareEmails(rightNode->email, largestNode->email) > 0) {
+                largest = right;
+            }
+        }
+
+        if (largest == index)
+            break;
+
+        swapElements(heap, index, largest);
+        index = largest;
+    }
+}
+
+/* ---------------------------------------------------------
+   Initialize an empty heap.
+   --------------------------------------------------------- */
+void initHeap(MaxHeap *heap)
+{
+    heap->head = NULL;
+    heap->size = 0;
+}
+
+/* ---------------------------------------------------------
+   Insert an email into the max heap.
+   --------------------------------------------------------- */
+void insertHeap(MaxHeap *heap, Email *email)
+{
+    Node *newNode;
+    Node *last;
+
+    newNode = malloc(sizeof(Node));
+
+    if (newNode == NULL) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    newNode->email = email;
+    newNode->next = NULL;
+
+    /*
+     * Append to the end of the linked list.
+     * The resulting list remains in heap level-order.
+     */
+    if (heap->head == NULL) {
+        heap->head = newNode;
+    } else {
+        last = getNodeAt(heap, heap->size - 1);
+        last->next = newNode;
+    }
+
+    heap->size++;
+
+    /* Restore max-heap property. */
+    heapifyUp(heap, heap->size - 1);
+}
+
+/* ---------------------------------------------------------
+   Remove and return the highest-priority email.
+
+   Returns NULL if the heap is empty.
+   --------------------------------------------------------- */
+Email *removeMax(MaxHeap *heap)
+{
+    Node *rootNode;
+    Node *lastNode;
+    Node *previous;
+    Email *result;
+
+    if (heap->size == 0)
+        return NULL;
+
+    rootNode = heap->head;
+    result = rootNode->email;
+
+    /*
+     * If there is only one element, simply remove the root.
+     */
+    if (heap->size == 1) {
+        heap->head = NULL;
+        heap->size = 0;
+
+        free(rootNode);
+        return result;
+    }
+
+    /*
+     * Move the last element to the root.
+     */
+    lastNode = getNodeAt(heap, heap->size - 1);
+    rootNode->email = lastNode->email;
+
+    /*
+     * Find the node immediately before lastNode and unlink it.
+     */
+    previous = getNodeAt(heap, heap->size - 2);
+    previous->next = NULL;
+
+    free(lastNode);
+
+    heap->size--;
+
+    /* Restore max-heap property. */
+    heapifyDown(heap, 0);
+
+    return result;
+}
+
+/* ---------------------------------------------------------
+   Return the highest-priority email without removing it.
+   --------------------------------------------------------- */
+Email *peekMax(MaxHeap *heap)
+{
+    if (heap->size == 0 || heap->head == NULL)
+        return NULL;
+
+    return heap->head->email;
+}
+
+/* ---------------------------------------------------------
+   Free all heap nodes and email objects.
+   --------------------------------------------------------- */
+void destroyHeap(MaxHeap *heap)
+{
+    Node *current;
+    Node *next;
+
+    current = heap->head;
+
+    while (current != NULL) {
+        next = current->next;
+
+        free(current->email);
+        free(current);
+
+        current = next;
+    }
+
+    heap->head = NULL;
+    heap->size = 0;
+}
+
+/* ---------------------------------------------------------
+   Trim leading and trailing whitespace.
+   --------------------------------------------------------- */
+char *trimWhitespace(char *str)
+{
+    char *end;
+
+    while (isspace((unsigned char)*str))
+        str++;
+
+    if (*str == '\0')
+        return str;
+
+    end = str + strlen(str) - 1;
+
+    while (end > str && isspace((unsigned char)*end))
+        end--;
+
+    end[1] = '\0';
+
+    return str;
+}
+
+/* ---------------------------------------------------------
+   Parse an EMAIL command.
+
+   Expected:
+       EMAIL category,subject,date
+   --------------------------------------------------------- */
+Email *parseEmail(const char *line)
+{
+    char buffer[MAX_LINE];
+    char *firstComma;
+    char *secondComma;
+    char *category;
+    char *subject;
+    char *date;
+    Email *email;
+
+    strncpy(buffer, line, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    /*
+     * Skip "EMAIL".
+     */
+    category = buffer + 5;
+    category = trimWhitespace(category);
+
+    firstComma = strchr(category, ',');
+
+    if (firstComma == NULL)
+        return NULL;
+
+    *firstComma = '\0';
+
+    subject = firstComma + 1;
+    secondComma = strchr(subject, ',');
+
+    if (secondComma == NULL)
+        return NULL;
+
+    *secondComma = '\0';
+
+    date = secondComma + 1;
+
+    category = trimWhitespace(category);
+    subject = trimWhitespace(subject);
+    date = trimWhitespace(date);
+
+    if (getCategoryPriority(category) == 0)
+        return NULL;
+
+    if (*subject == '\0' || *date == '\0')
+        return NULL;
+
+    email = malloc(sizeof(Email));
+
+    if (email == NULL) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    strncpy(email->category, category, MAX_CATEGORY - 1);
+    email->category[MAX_CATEGORY - 1] = '\0';
+
+    strncpy(email->subject, subject, MAX_SUBJECT - 1);
+    email->subject[MAX_SUBJECT - 1] = '\0';
+
+    strncpy(email->date, date, MAX_DATE - 1);
+    email->date[MAX_DATE - 1] = '\0';
+
+    email->categoryPriority = getCategoryPriority(email->category);
+    email->dateValue = convertDate(email->date);
+    email->heapIndex = -1;
+
+    return email;
+}
+
+/* ---------------------------------------------------------
+   Process commands from the input file.
+   --------------------------------------------------------- */
+void processCommands(FILE *input, MaxHeap *heap)
+{
+    char line[MAX_LINE];
+
+    while (fgets(line, sizeof(line), input) != NULL) {
+        char *command;
+
+        command = trimWhitespace(line);
+
+        /* Ignore blank lines. */
+        if (*command == '\0')
+            continue;
+
+        if (strncmp(command, "EMAIL ", 6) == 0) {
+            Email *email = parseEmail(command);
+
+            if (email != NULL) {
+                insertHeap(heap, email);
+            }
+        }
+        else if (strcmp(command, "NEXT") == 0) {
+            Email *email = peekMax(heap);
+
+            if (email != NULL) {
+                printf("Next email:\n");
+                printf("Sender: %s\n", email->category);
+                printf("Subject: %s\n", email->subject);
+                printf("Date: %s\n", email->date);
+            }
+        }
+        else if (strcmp(command, "READ") == 0) {
+            /*
+             * removeMax() silently removes the current
+             * highest-priority email.
+             *
+             * This also handles consecutive READ commands:
+             * each READ removes one email.
+             */
+            Email *email = removeMax(heap);
+
+            if (email != NULL)
+                free(email);
+        }
+        else if (strcmp(command, "COUNT") == 0) {
+            printf("There are %d emails to read.\n", heap->size);
+        }
+    }
+}
+
+/* ---------------------------------------------------------
+   Main
+   --------------------------------------------------------- */
+int main(int argc, char *argv[])
+{
+    FILE *input;
+    MaxHeap heap;
+
+    /*
+     * Usage:
+     *     ./email_queue commands.txt
+     */
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <input-file>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    input = fopen(argv[1], "r");
+
+    if (input == NULL) {
+        perror("Could not open input file");
+        return EXIT_FAILURE;
+    }
+
+    initHeap(&heap);
+
+    processCommands(input, &heap);
+
+    fclose(input);
+
+    destroyHeap(&heap);
+
+    return EXIT_SUCCESS;
+}
